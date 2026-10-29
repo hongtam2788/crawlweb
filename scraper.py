@@ -1,6 +1,7 @@
 import asyncio
 from playwright.async_api import async_playwright
 import time
+import re
 from config import THUOCSI_USERNAME, THUOCSI_PASSWORD
 
 class ThuocsiScraper:
@@ -62,7 +63,7 @@ class ThuocsiScraper:
 
             # Đợi thêm để JavaScript tải xong giá
             await page.wait_for_load_state('domcontentloaded')
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
 
             # CSS selectors để tìm giá - được cập nhật với nhiều variants hơn
             selectors = [
@@ -100,28 +101,29 @@ class ThuocsiScraper:
             # Nếu vẫn không tìm được, dùng JavaScript để tìm
             if not price_text:
                 price_text = await page.evaluate('''() => {
-                    // Tìm text chứa số tiền
-                    const walker = document.createTreeWalker(
-                        document.body,
-                        NodeFilter.SHOW_TEXT,
-                        null
-                    );
+                    // Tìm element chứa giá bằng cách tìm kiếm thường trong các span/div
+                    let candidates = [];
 
-                    let node;
-                    while (node = walker.nextNode()) {
-                        const text = node.textContent.trim();
-                        // Tìm pattern giá (ví dụ: "123.456" hoặc "123456")
-                        if (/[0-9]{3,}/.test(text) && /[0-9]{3,}/.test(text.replace(/[.,]/g, ''))) {
-                            return text;
+                    // Tìm tất cả text nodes chứa số lớn
+                    document.querySelectorAll('span, div, p').forEach(el => {
+                        const text = el.innerText || el.textContent;
+                        if (text) {
+                            const cleaned = text.replace(/[.,]/g, '').trim();
+                            const numbers = cleaned.match(/[0-9]+/g);
+                            if (numbers && numbers.some(n => n.length >= 4)) {
+                                candidates.push(text);
+                            }
                         }
-                    }
-                    return null;
+                    });
+
+                    // Trả về candidate đầu tiên (có khả năng cao là giá)
+                    return candidates.length > 0 ? candidates[0] : null;
                 }''')
 
             if price_text:
                 # Xóa ký tự không phải số
                 price = ''.join(filter(str.isdigit, price_text))
-                if price and len(price) >= 3:  # Giá hợp lệ phải có ít nhất 3 chữ số
+                if price and len(price) >= 4:  # Giá phải có ít nhất 4 chữ số (>= 1000 VND)
                     return int(price)
 
             return None
@@ -132,25 +134,79 @@ class ThuocsiScraper:
             if page:
                 await page.close()
 
+    async def get_catalog_prices(self, products):
+        """Lấy giá từ trang product catalog"""
+        page = None
+        try:
+            page = await self.context.new_page()
+            print("📖 Đang tải trang product catalog...")
+            await page.goto('https://thuocsi.vn/user/product-catalog', wait_until='networkidle', timeout=30000)
+
+            # Đợi JavaScript load xong
+            await page.wait_for_load_state('domcontentloaded')
+            await asyncio.sleep(3)
+
+            # Tìm tất cả product rows/items trên trang
+            product_data = await page.evaluate('''() => {
+                const products = [];
+
+                // Tìm tất cả elements có chứa tên sản phẩm
+                document.querySelectorAll('[class*="product"], [class*="row"], [class*="item"], tr, div[role="row"]').forEach(el => {
+                    const text = el.innerText || el.textContent;
+                    if (text) {
+                        // Tìm patterns có tên sản phẩm + giá
+                        const priceMatch = text.match(/[0-9]{4,}[0-9]{0,}/);
+                        if (priceMatch) {
+                            products.push({
+                                text: text.substring(0, 500),
+                                price: priceMatch[0]
+                            });
+                        }
+                    }
+                });
+
+                return products;
+            }''')
+
+            print(f"Found {len(product_data)} items on catalog page")
+            if product_data:
+                print(f"Sample: {product_data[0]}")
+
+            return None  # Will implement matching logic next
+        except Exception as e:
+            print(f"✗ Lỗi lấy giá từ catalog: {e}")
+            return None
+        finally:
+            if page:
+                await page.close()
+
     async def get_multiple_prices(self, products):
-        """Lấy giá từ nhiều sản phẩm (song song)"""
-        tasks = [self.get_product_price(p['url']) for p in products]
-        prices = await asyncio.gather(*tasks)
+        """Lấy giá từ nhiều sản phẩm (song song hoặc từ catalog)"""
+        # Thử phương pháp mới: lấy từ catalog page
+        catalog_result = await self.get_catalog_prices(products)
 
-        results = []
-        for product, price in zip(products, prices):
-            if price:
-                results.append({
-                    'STT': product['STT'],
-                    'name': product['name'],
-                    'url': product['url'],
-                    'price': price
-                })
-                print(f"✓ {product['name']}: {price:,} VNĐ")
-            else:
-                print(f"✗ {product['name']}: Không lấy được giá")
+        # Nếu catalog không hoạt động, quay lại phương pháp cũ
+        if not catalog_result:
+            print("\n📍 Fallback: Scraping individual product pages...")
+            tasks = [self.get_product_price(p['url']) for p in products]
+            prices = await asyncio.gather(*tasks)
 
-        return results
+            results = []
+            for product, price in zip(products, prices):
+                if price:
+                    results.append({
+                        'STT': product['STT'],
+                        'name': product['name'],
+                        'url': product['url'],
+                        'price': price
+                    })
+                    print(f"✓ {product['name']}: {price:,} VNĐ")
+                else:
+                    print(f"✗ {product['name']}: Không lấy được giá")
+
+            return results
+        else:
+            return catalog_result
 
     async def close(self):
         """Đóng browser"""
