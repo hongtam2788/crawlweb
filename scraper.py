@@ -60,30 +60,68 @@ class ThuocsiScraper:
             page = await self.context.new_page()
             await page.goto(product_url, wait_until='networkidle', timeout=30000)
 
-            # CSS selectors để tìm giá (cần điều chỉnh theo cấu trúc thực tế)
-            # Thử các selector phổ biến
+            # Đợi thêm để JavaScript tải xong giá
+            await page.wait_for_load_state('domcontentloaded')
+            await asyncio.sleep(2)
+
+            # CSS selectors để tìm giá - được cập nhật với nhiều variants hơn
             selectors = [
+                # Các selector phổ biến
                 'span.price',
                 'span.product-price',
                 'div.price',
                 'span[data-price]',
                 'div[data-price]',
                 'p.price',
+                # Next.js/React-specific selectors
+                '[class*="price"]',
+                '[class*="Price"]',
+                '[class*="salePrice"]',
+                '[class*="displayPrice"]',
+                '[data-testid*="price"]',
+                '[id*="price"]',
+                # Các class variants
+                '.price__value',
+                '.product__price',
+                '.product-price-display',
             ]
 
             price_text = None
             for selector in selectors:
                 try:
-                    price_text = await page.text_content(selector)
-                    if price_text and price_text.strip():
-                        break
+                    element = await page.query_selector(selector)
+                    if element:
+                        price_text = await page.text_content(selector)
+                        if price_text and price_text.strip():
+                            break
                 except:
                     continue
+
+            # Nếu vẫn không tìm được, dùng JavaScript để tìm
+            if not price_text:
+                price_text = await page.evaluate('''() => {
+                    // Tìm text chứa số tiền
+                    const walker = document.createTreeWalker(
+                        document.body,
+                        NodeFilter.SHOW_TEXT,
+                        null
+                    );
+
+                    let node;
+                    while (node = walker.nextNode()) {
+                        const text = node.textContent.trim();
+                        // Tìm pattern giá (ví dụ: "123.456" hoặc "123456")
+                        if (/[0-9]{3,}/.test(text) && /[0-9]{3,}/.test(text.replace(/[.,]/g, ''))) {
+                            return text;
+                        }
+                    }
+                    return null;
+                }''')
 
             if price_text:
                 # Xóa ký tự không phải số
                 price = ''.join(filter(str.isdigit, price_text))
-                if price:
+                if price and len(price) >= 3:  # Giá hợp lệ phải có ít nhất 3 chữ số
                     return int(price)
 
             return None
