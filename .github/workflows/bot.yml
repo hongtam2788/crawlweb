@@ -1,0 +1,42 @@
+name: GiaThuocSi Bot Daily Run
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # Chạy 9h sáng mỗi ngày
+  workflow_dispatch:  # Cho phép chạy thủ công
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Create .env from secrets
+      run: |
+        echo "THUOCSI_USERNAME=${{ secrets.THUOCSI_USERNAME }}" > .env
+        echo "THUOCSI_PASSWORD=${{ secrets.THUOCSI_PASSWORD }}" >> .env
+        echo "SCHEDULE_HOUR=9" >> .env
+        echo "SCHEDULE_MINUTE=0" >> .env
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        playwright install chromium
+    
+    - name: Run bot
+      run: python test_scraper.py
+    
+    - name: Commit results
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add data/prices.xlsx
+        git commit -m "Auto: Update prices $(date)" || true
+        git push
