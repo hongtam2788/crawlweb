@@ -1,4 +1,5 @@
 import asyncio
+import os
 from config import PRODUCTS
 from scraper import scrape_prices
 from excel_handler import ExcelHandler
@@ -11,6 +12,10 @@ async def test_scraper():
     print("="*50)
     print(f"⏰ Thời gian: {datetime.now()}")
     print(f"📦 Sẽ lấy giá từ {len(PRODUCTS)} sản phẩm\n")
+
+    # Tạo folder data nếu chưa tồn tại
+    os.makedirs("data", exist_ok=True)
+    print("✓ Folder data/ đã sẵn sàng\n")
 
     if not PRODUCTS:
         print("✗ Không tìm thấy sản phẩm nào trong products.json")

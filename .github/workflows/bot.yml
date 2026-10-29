@@ -37,6 +37,10 @@ jobs:
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add data/prices.xlsx
-        git commit -m "Auto: Update prices $(date)" || true
-        git push
+        if [ -f data/prices.xlsx ]; then
+          git add data/prices.xlsx
+          git commit -m "Auto: Update prices $(date)" || true
+          git push
+        else
+          echo "Warning: data/prices.xlsx not found, skipping commit"
+        fi
