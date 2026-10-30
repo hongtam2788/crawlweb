@@ -52,8 +52,8 @@ class ThuocsiScraper:
             if page:
                 await page.close()
 
-    async def get_all_prices_from_catalog(self, products):
-        """Lấy giá tất cả sản phẩm từ trang catalog - multiple methods"""
+    async def get_all_products_from_catalog(self):
+        """Lấy TẤT CẢ giá sản phẩm từ trang catalog"""
         page = None
         try:
             page = await self.context.new_page()
@@ -83,9 +83,9 @@ class ThuocsiScraper:
 
                 await asyncio.sleep(2.5)
 
-            # Lấy giá từ trang - thử nhiều cách
+            # Lấy tất cả giá sản phẩm từ trang - thử nhiều cách
             print("📊 Trích xuất giá từ tất cả sản phẩm...")
-            extracted_data = await page.evaluate('''() => {
+            all_products = await page.evaluate('''() => {
                 const results = [];
 
                 // Tìm tất cả product cards - flexible selector
@@ -99,7 +99,7 @@ class ThuocsiScraper:
                 const uniqueCards = Array.from(new Set(cards));
 
                 uniqueCards.forEach((card, idx) => {
-                    if (idx >= 100) return; // Limit to 100 cards
+                    if (idx >= 1000) return; // Limit để safety
 
                     const cardText = card.innerText || card.textContent || '';
                     if (cardText.length < 5) return; // Skip empty cards
@@ -178,27 +178,11 @@ class ThuocsiScraper:
                 return results;
             }''')
 
-            # Map với products từ config
-            results = []
-            extracted_by_name = {p['name']: p['price'] for p in extracted_data}
+            print(f"\n✓ Tổng: {len(all_products)} sản phẩm được tìm thấy")
+            for product in all_products:
+                print(f"  ✓ {product['name']}: {product['price']:,} VNĐ")
 
-            for product in products:
-                # Tìm giá bằng matching tên (hoặc theo thứ tự)
-                price = extracted_by_name.get(product['name'])
-
-                if price:
-                    results.append({
-                        'STT': product['STT'],
-                        'name': product['name'],
-                        'url': product['url'],
-                        'price': price
-                    })
-                    print(f"✓ {product['name']}: {price:,} VNĐ")
-                else:
-                    print(f"⚠️ {product['name']}: Không tìm được giá trên catalog")
-
-            print(f"\n✓ Tổng: {len(results)}/{len(products)} sản phẩm có giá")
-            return results
+            return all_products
 
         except Exception as e:
             print(f"✗ Lỗi lấy giá từ catalog: {e}")
@@ -222,8 +206,8 @@ class ThuocsiScraper:
         except Exception as e:
             print(f"✗ Lỗi đóng Playwright: {e}")
 
-async def scrape_prices(products):
-    """Wrapper function để scrape giá từ catalog page"""
+async def scrape_all_prices():
+    """Scrape tất cả giá từ catalog page"""
     scraper = ThuocsiScraper()
     try:
         if not await scraper.setup():
@@ -232,7 +216,7 @@ async def scrape_prices(products):
         if not await scraper.login():
             return []
 
-        results = await scraper.get_all_prices_from_catalog(products)
+        results = await scraper.get_all_products_from_catalog()
         return results
     except Exception as e:
         print(f"✗ Lỗi chung: {e}")
