@@ -54,89 +54,99 @@ class ThuocsiScraper:
             if page:
                 await page.close()
 
-    async def get_product_price(self, product_url):
-        """Lấy giá từ URL sản phẩm - dùng React fiber approach"""
+    async def get_all_prices_from_catalog(self, products):
+        """Lấy giá tất cả sản phẩm từ trang catalog duy nhất"""
         page = None
         try:
             page = await self.context.new_page()
-            await page.goto(product_url, wait_until='domcontentloaded', timeout=15000)
+            print("📖 Đang tải trang product catalog...")
+            await page.goto('https://thuocsi.vn/user/product-catalog', wait_until='domcontentloaded', timeout=15000)
 
-            # Đợi JavaScript decrypt giá (tối đa 8 giây)
-            print(f"⏳ Đợi JavaScript decrypt giá (max 8s)...")
-            for wait_sec in range(8):
-                await asyncio.sleep(1)
-
-                # Tìm giá via React fiber approach (tham khảo code user cung cấp)
-                price_data = await page.evaluate('''() => {
-                    // Tìm canvas element chứa giá
-                    const canvas = document.querySelector('canvas[class*="canvasPrice"]');
-                    if (!canvas) {
-                        return { price: null, error: 'No canvas found' };
+            # Click "Xem thêm" để load tất cả sản phẩm
+            print("⏳ Clicking 'Xem thêm' để tải tất cả sản phẩm...")
+            for click_count in range(20):
+                # Tìm và click button "Xem thêm"
+                btn_clicked = await page.evaluate('''() => {
+                    const btn = [...document.querySelectorAll('button,a,div,span')]
+                        .find(e => e.childElementCount === 0 && /^Xem thêm \\d+ sản phẩm$/.test(e.textContent.trim()));
+                    if (btn) {
+                        btn.click();
+                        return true;
                     }
+                    return false;
+                }''')
 
-                    // Tìm React fiber key
+                if not btn_clicked:
+                    print("  ✓ Tất cả sản phẩm đã tải")
+                    break
+
+                await asyncio.sleep(2.5)  # Wait for content to load
+
+            # Lấy giá tất cả sản phẩm từ trang
+            print("📊 Trích xuất giá từ tất cả sản phẩm...")
+            extracted_data = await page.evaluate('''() => {
+                const getPrice = (canvas) => {
+                    if (!canvas) return null;
                     const fiberKey = Object.keys(canvas).find(k => k.startsWith('__reactFiber'));
-                    if (!fiberKey) {
-                        return { price: null, error: 'No React fiber found' };
-                    }
+                    if (!fiberKey) return null;
 
-                    // Walk up React tree để tìm displayPriceFormated
                     let fiber = canvas[fiberKey];
                     for (let i = 0; i < 15 && fiber; i++) {
                         if (fiber.memoizedProps?.displayPriceFormated) {
                             const priceStr = String(fiber.memoizedProps.displayPriceFormated);
                             const priceNum = parseInt(priceStr.replace(/[^0-9]/g, ''), 10);
-                            if (priceNum > 0) {
-                                return {
-                                    price: priceNum,
-                                    priceStr: priceStr,
-                                    found_at_level: i
-                                };
-                            }
+                            if (priceNum > 0) return priceNum;
                         }
-                        fiber = fiber.return;  // Go up one level in React tree
+                        fiber = fiber.return;
                     }
+                    return null;
+                };
 
-                    // Fallback: tìm giá trong memoizedProps của component chứa
-                    return { price: null, error: 'displayPriceFormated not found in tree' };
-                }''')
+                // Extract từ tất cả product cards
+                const products = [...document.querySelectorAll('[class*="styles_card__"]')]
+                    .filter(card => card.innerText.length > 0)
+                    .map(card => {
+                        const nameElems = card.querySelectorAll('[class*="titleWrapper"]');
+                        const name = nameElems.length > 0 ? nameElems[0].innerText.trim() : '';
+                        const canvas = card.querySelector('canvas[class*="canvasPrice"]');
+                        const price = getPrice(canvas);
+                        return { name, price };
+                    })
+                    .filter(p => p.price !== null);
 
-                if price_data.get('price'):
-                    print(f"  ✓ Tìm được giá: {price_data['price']:,} VNĐ")
-                    return price_data['price']
+                return products;
+            }''')
+
+            # Map với products từ config
+            results = []
+            extracted_by_name = {p['name']: p['price'] for p in extracted_data}
+
+            for product in products:
+                # Tìm giá bằng matching tên (hoặc theo thứ tự)
+                price = extracted_by_name.get(product['name'])
+
+                if price:
+                    results.append({
+                        'STT': product['STT'],
+                        'name': product['name'],
+                        'url': product['url'],
+                        'price': price
+                    })
+                    print(f"✓ {product['name']}: {price:,} VNĐ")
                 else:
-                    if wait_sec == 0:
-                        print(f"  [DEBUG] {price_data.get('error', 'Unknown error')}")
+                    print(f"⚠️ {product['name']}: Không tìm được giá trên catalog")
 
-            print(f"  ✗ Không tìm được giá trong 8s")
-            return None
+            print(f"\n✓ Tổng: {len(results)}/{len(products)} sản phẩm có giá")
+            return results
 
         except Exception as e:
-            print(f"✗ Lỗi lấy giá từ {product_url}: {e}")
-            return None
+            print(f"✗ Lỗi lấy giá từ catalog: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
         finally:
             if page:
                 await page.close()
-
-    async def get_multiple_prices(self, products):
-        """Lấy giá từ nhiều sản phẩm (song song)"""
-        tasks = [self.get_product_price(p['url']) for p in products]
-        prices = await asyncio.gather(*tasks)
-
-        results = []
-        for product, price in zip(products, prices):
-            if price:
-                results.append({
-                    'STT': product['STT'],
-                    'name': product['name'],
-                    'url': product['url'],
-                    'price': price
-                })
-                print(f"✓ {product['name']}: {price:,} VNĐ")
-            else:
-                print(f"✗ {product['name']}: Không lấy được giá")
-
-        return results
 
     async def close(self):
         """Đóng browser"""
@@ -152,7 +162,7 @@ class ThuocsiScraper:
             print(f"✗ Lỗi đóng Playwright: {e}")
 
 async def scrape_prices(products):
-    """Wrapper function để scrape giá"""
+    """Wrapper function để scrape giá từ catalog page"""
     scraper = ThuocsiScraper()
     try:
         if not await scraper.setup():
@@ -161,7 +171,7 @@ async def scrape_prices(products):
         if not await scraper.login():
             return []
 
-        results = await scraper.get_multiple_prices(products)
+        results = await scraper.get_all_prices_from_catalog(products)
         return results
     except Exception as e:
         print(f"✗ Lỗi chung: {e}")
