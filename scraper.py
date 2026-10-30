@@ -69,10 +69,10 @@ class ThuocsiScraper:
             for wait_sec in range(8):
                 await asyncio.sleep(1)
 
-                # Tìm giá trong DOM sau mỗi giây
-                price_text = await page.evaluate('''() => {
-                    // Tìm tất cả text nodes chứa số tiền
+                # Tìm giá trong DOM sau mỗi giây - với debug info
+                debug_info = await page.evaluate('''() => {
                     let numbers = [];
+                    let allText = "";
 
                     const walker = document.createTreeWalker(
                         document.body,
@@ -83,9 +83,11 @@ class ThuocsiScraper:
                     let node;
                     while (node = walker.nextNode()) {
                         const text = node.textContent.trim();
+                        if (text.length > 0) {
+                            allText += text + " | ";
+                        }
 
                         // Match: số 4+ chữ số (có thể có dấu phân cách)
-                        // VD: 150000, 150.000, 150,000
                         const matches = text.match(/[0-9]{1,3}(?:[.,][0-9]{3})*[0-9]{0,3}/g);
                         if (matches) {
                             numbers.push(...matches);
@@ -98,14 +100,27 @@ class ThuocsiScraper:
                         .filter(n => n >= 1000 && n <= 999999999)
                         .sort((a, b) => b - a);
 
-                    return priceNumbers.length > 0 ? priceNumbers[0] : null;
+                    return {
+                        foundPrice: priceNumbers.length > 0 ? priceNumbers[0] : null,
+                        allNumbers: numbers.slice(0, 20),  // First 20 numbers
+                        priceNumbers: priceNumbers.slice(0, 10),  // Valid prices
+                        pageLength: allText.length,
+                        hasPrice: allText.toLowerCase().includes('giá') || allText.toLowerCase().includes('price')
+                    };
                 }''')
 
-                if price_text:
-                    print(f"  ✓ Tìm được giá: {price_text:,} VNĐ")
-                    return price_text
+                if debug_info['foundPrice']:
+                    print(f"  ✓ Tìm được giá: {debug_info['foundPrice']:,} VNĐ")
+                    return debug_info['foundPrice']
+                else:
+                    # Debug output
+                    if wait_sec == 0:
+                        print(f"  [DEBUG] Trang có {debug_info['pageLength']} ký tự")
+                        print(f"  [DEBUG] Có từ 'giá/price': {debug_info['hasPrice']}")
+                        print(f"  [DEBUG] Numbers tìm được: {debug_info['allNumbers']}")
+                        print(f"  [DEBUG] Valid prices: {debug_info['priceNumbers']}")
 
-            print(f"  ✗ Không tìm được giá trong {wait_sec}s")
+            print(f"  ✗ Không tìm được giá trong 8s")
             return None
 
         except Exception as e:
