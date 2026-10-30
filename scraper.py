@@ -1,7 +1,5 @@
 import asyncio
 from playwright.async_api import async_playwright
-import time
-import re
 from config import THUOCSI_USERNAME, THUOCSI_PASSWORD
 
 class ThuocsiScraper:
