@@ -2,6 +2,7 @@ import asyncio
 from playwright.async_api import async_playwright
 import time
 import re
+import json
 from config import THUOCSI_USERNAME, THUOCSI_PASSWORD
 
 class ThuocsiScraper:
@@ -9,6 +10,7 @@ class ThuocsiScraper:
         self.playwright = None
         self.browser = None
         self.context = None
+        self.cookies = None
 
     async def setup(self):
         """Khởi tạo Playwright"""
@@ -45,6 +47,9 @@ class ThuocsiScraper:
             # Chờ navigate xong
             await page.wait_for_load_state('networkidle')
 
+            # Lưu cookies để dùng cho API calls
+            self.cookies = await self.context.cookies()
+
             print("✓ Đăng nhập thành công")
             return True
         except Exception as e:
@@ -54,159 +59,131 @@ class ThuocsiScraper:
             if page:
                 await page.close()
 
-    async def get_product_price(self, product_url):
-        """Lấy giá từ URL sản phẩm"""
+    def extract_sku_from_url(self, product_url):
+        """Lấy SKU từ URL sản phẩm"""
+        # URL format: https://thuocsi.vn/product/medx-refresh-tears-allergan-c15ml?isAvailable=false
+        # SKU là phần sau /product/
+        match = re.search(r'/product/([^?]+)', product_url)
+        if match:
+            return match.group(1)
+        return None
+
+    async def get_prices_from_api(self, products):
+        """Lấy giá từ API endpoint"""
         page = None
         try:
             page = await self.context.new_page()
-            await page.goto(product_url, wait_until='networkidle', timeout=30000)
+            print("📡 Đang gọi API để lấy giá...")
 
-            # Đợi thêm để JavaScript tải xong giá
-            await page.wait_for_load_state('domcontentloaded')
-            await asyncio.sleep(3)
+            # Trích SKU codes từ URLs
+            sku_codes = []
+            for product in products:
+                sku = self.extract_sku_from_url(product['url'])
+                if sku:
+                    sku_codes.append(sku)
 
-            # CSS selectors để tìm giá - được cập nhật với nhiều variants hơn
-            selectors = [
-                # Các selector phổ biến
-                'span.price',
-                'span.product-price',
-                'div.price',
-                'span[data-price]',
-                'div[data-price]',
-                'p.price',
-                # Next.js/React-specific selectors
-                '[class*="price"]',
-                '[class*="Price"]',
-                '[class*="salePrice"]',
-                '[class*="displayPrice"]',
-                '[data-testid*="price"]',
-                '[id*="price"]',
-                # Các class variants
-                '.price__value',
-                '.product__price',
-                '.product-price-display',
-            ]
+            if not sku_codes:
+                print("✗ Không thể trích SKU từ URLs")
+                return None
 
-            price_text = None
-            for selector in selectors:
-                try:
-                    element = await page.query_selector(selector)
-                    if element:
-                        price_text = await page.text_content(selector)
-                        if price_text and price_text.strip():
-                            break
-                except:
-                    continue
+            print(f"📦 Gửi request cho {len(sku_codes)} SKU...")
 
-            # Nếu vẫn không tìm được, dùng JavaScript để tìm
-            if not price_text:
-                price_text = await page.evaluate('''() => {
-                    // Tìm element chứa giá bằng cách tìm kiếm thường trong các span/div
-                    let candidates = [];
-
-                    // Tìm tất cả text nodes chứa số lớn
-                    document.querySelectorAll('span, div, p').forEach(el => {
-                        const text = el.innerText || el.textContent;
-                        if (text) {
-                            const cleaned = text.replace(/[.,]/g, '').trim();
-                            const numbers = cleaned.match(/[0-9]+/g);
-                            if (numbers && numbers.some(n => n.length >= 4)) {
-                                candidates.push(text);
-                            }
-                        }
+            # Gọi API để lấy giá
+            response = await page.evaluate('''async (skuCodes) => {
+                try {
+                    const res = await fetch('https://api.thuocsi.vn/sku/price-volatility/list', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            skuCodes: skuCodes
+                        }),
+                        credentials: 'include'
                     });
 
-                    // Trả về candidate đầu tiên (có khả năng cao là giá)
-                    return candidates.length > 0 ? candidates[0] : null;
-                }''')
-
-            if price_text:
-                # Xóa ký tự không phải số
-                price = ''.join(filter(str.isdigit, price_text))
-                if price and len(price) >= 4:  # Giá phải có ít nhất 4 chữ số (>= 1000 VND)
-                    return int(price)
-
-            return None
-        except Exception as e:
-            print(f"✗ Lỗi lấy giá từ {product_url}: {e}")
-            return None
-        finally:
-            if page:
-                await page.close()
-
-    async def get_catalog_prices(self, products):
-        """Lấy giá từ trang product catalog"""
-        page = None
-        try:
-            page = await self.context.new_page()
-            print("📖 Đang tải trang product catalog...")
-            await page.goto('https://thuocsi.vn/user/product-catalog', wait_until='networkidle', timeout=30000)
-
-            # Đợi JavaScript load xong
-            await page.wait_for_load_state('domcontentloaded')
-            await asyncio.sleep(3)
-
-            # Tìm tất cả product rows/items trên trang
-            product_data = await page.evaluate('''() => {
-                const products = [];
-
-                // Tìm tất cả elements có chứa tên sản phẩm
-                document.querySelectorAll('[class*="product"], [class*="row"], [class*="item"], tr, div[role="row"]').forEach(el => {
-                    const text = el.innerText || el.textContent;
-                    if (text) {
-                        // Tìm patterns có tên sản phẩm + giá
-                        const priceMatch = text.match(/[0-9]{4,}[0-9]{0,}/);
-                        if (priceMatch) {
-                            products.push({
-                                text: text.substring(0, 500),
-                                price: priceMatch[0]
-                            });
-                        }
+                    if (!res.ok) {
+                        return { error: `HTTP ${res.status}` };
                     }
-                });
 
-                return products;
-            }''')
+                    const data = await res.json();
+                    return data;
+                } catch (e) {
+                    return { error: e.message };
+                }
+            }''', sku_codes)
 
-            print(f"Found {len(product_data)} items on catalog page")
-            if product_data:
-                print(f"Sample: {product_data[0]}")
+            if response and 'error' not in response:
+                print(f"✓ API response nhận được: {len(response) if isinstance(response, list) else 1} items")
+                return response
+            else:
+                print(f"✗ API error: {response.get('error', 'Unknown error')}")
+                return None
 
-            return None  # Will implement matching logic next
         except Exception as e:
-            print(f"✗ Lỗi lấy giá từ catalog: {e}")
+            print(f"✗ Lỗi gọi API: {e}")
             return None
         finally:
             if page:
                 await page.close()
+
+    async def match_prices_to_products(self, products, api_response):
+        """Match giá từ API response với products"""
+        results = []
+
+        if not api_response:
+            return results
+
+        # Nếu response là dict (keyed by SKU)
+        if isinstance(api_response, dict):
+            for product in products:
+                sku = self.extract_sku_from_url(product['url'])
+                if sku and sku in api_response:
+                    price_data = api_response[sku]
+                    # Tìm giá trong response
+                    price = None
+                    if isinstance(price_data, dict):
+                        price = price_data.get('price') or price_data.get('salePrice') or price_data.get('currentPrice')
+                    elif isinstance(price_data, (int, float)):
+                        price = price_data
+
+                    if price:
+                        results.append({
+                            'STT': product['STT'],
+                            'name': product['name'],
+                            'url': product['url'],
+                            'price': int(price)
+                        })
+                        print(f"✓ {product['name']}: {int(price):,} VNĐ")
+                    else:
+                        print(f"✗ {product['name']}: Giá không tìm thấy")
+        # Nếu response là list
+        elif isinstance(api_response, list):
+            for product in products:
+                sku = self.extract_sku_from_url(product['url'])
+                for item in api_response:
+                    if item.get('sku') == sku or item.get('skuCode') == sku:
+                        price = item.get('price') or item.get('salePrice') or item.get('currentPrice')
+                        if price:
+                            results.append({
+                                'STT': product['STT'],
+                                'name': product['name'],
+                                'url': product['url'],
+                                'price': int(price)
+                            })
+                            print(f"✓ {product['name']}: {int(price):,} VNĐ")
+
+        return results
 
     async def get_multiple_prices(self, products):
-        """Lấy giá từ nhiều sản phẩm (song song hoặc từ catalog)"""
-        # Thử phương pháp mới: lấy từ catalog page
-        catalog_result = await self.get_catalog_prices(products)
+        """Lấy giá từ API (phương pháp chính)"""
+        api_response = await self.get_prices_from_api(products)
 
-        # Nếu catalog không hoạt động, quay lại phương pháp cũ
-        if not catalog_result:
-            print("\n📍 Fallback: Scraping individual product pages...")
-            tasks = [self.get_product_price(p['url']) for p in products]
-            prices = await asyncio.gather(*tasks)
-
-            results = []
-            for product, price in zip(products, prices):
-                if price:
-                    results.append({
-                        'STT': product['STT'],
-                        'name': product['name'],
-                        'url': product['url'],
-                        'price': price
-                    })
-                    print(f"✓ {product['name']}: {price:,} VNĐ")
-                else:
-                    print(f"✗ {product['name']}: Không lấy được giá")
-
-            return results
+        if api_response:
+            return await self.match_prices_to_products(products, api_response)
         else:
-            return catalog_result
+            print("✗ Không lấy được giá từ API")
+            return []
 
     async def close(self):
         """Đóng browser"""
