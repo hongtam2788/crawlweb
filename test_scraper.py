@@ -24,27 +24,31 @@ async def test_scraper():
         print(f"\n✓ Lấy giá thành công từ {len(results)} sản phẩm")
         print("\n📊 Danh sách sản phẩm:\n")
 
+        formatted_results = []
         for idx, result in enumerate(results, 1):
+            # Parse price - có thể là chuỗi hoặc số
+            price_str = result['price']
+            if isinstance(price_str, str):
+                # Nếu là chuỗi định dạng giá (ví dụ "123.456đ" hoặc "123.456"), lấy số
+                price_value = int(price_str.replace('.', '').replace('đ', '').strip())
+            else:
+                price_value = int(price_str)
+
             print(f"  {idx}. {result['name']}")
-            print(f"     💰 Giá: {result['price']:,} VNĐ\n")
+            print(f"     💰 Giá: {price_value:,} VNĐ\n")
+
+            formatted_results.append({
+                'STT': idx,
+                'name': result['name'],
+                'url': '',
+                'price': price_value
+            })
 
         # Lưu vào Excel
         print("💾 Đang lưu vào Excel...")
         excel = ExcelHandler()
-
-        # Convert results để phù hợp với ExcelHandler (thêm STT và URL)
-        formatted_results = [
-            {
-                'STT': idx,
-                'name': result['name'],
-                'url': '',  # Không có URL vì lấy từ catalog chung
-                'price': result['price']
-            }
-            for idx, result in enumerate(results, 1)
-        ]
-
         excel.add_prices(formatted_results)
-        print(f"✓ Đã lưu {len(results)} sản phẩm vào {excel.file}\n")
+        print(f"✓ Đã lưu {len(formatted_results)} sản phẩm vào {excel.file}\n")
 
     else:
         print("\n✗ Không lấy được giá nào")
