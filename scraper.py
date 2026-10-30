@@ -59,13 +59,14 @@ class ThuocsiScraper:
         page = None
         try:
             page = await self.context.new_page()
-            await page.goto(product_url, wait_until='networkidle', timeout=30000)
+            # Use domcontentloaded instead of networkidle to load faster (faster DOM ready)
+            await page.goto(product_url, wait_until='domcontentloaded', timeout=15000)
 
             # Đợi JavaScript trang decrypt giá (tối đa 10 giây)
             await page.wait_for_load_state('domcontentloaded')
 
-            print(f"⏳ Đợi JavaScript decrypt giá (max 10s)...")
-            for wait_sec in range(10):
+            print(f"⏳ Đợi JavaScript decrypt giá (max 8s)...")
+            for wait_sec in range(8):
                 await asyncio.sleep(1)
 
                 # Tìm giá trong DOM sau mỗi giây
