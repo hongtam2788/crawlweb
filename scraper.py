@@ -55,70 +55,58 @@ class ThuocsiScraper:
                 await page.close()
 
     async def get_product_price(self, product_url):
-        """Lấy giá từ URL sản phẩm - để browser decrypt"""
+        """Lấy giá từ URL sản phẩm - dùng React fiber approach"""
         page = None
         try:
             page = await self.context.new_page()
-            # Use domcontentloaded instead of networkidle to load faster (faster DOM ready)
             await page.goto(product_url, wait_until='domcontentloaded', timeout=15000)
 
-            # Đợi JavaScript trang decrypt giá (tối đa 10 giây)
-            await page.wait_for_load_state('domcontentloaded')
-
+            # Đợi JavaScript decrypt giá (tối đa 8 giây)
             print(f"⏳ Đợi JavaScript decrypt giá (max 8s)...")
             for wait_sec in range(8):
                 await asyncio.sleep(1)
 
-                # Tìm giá trong DOM sau mỗi giây - với debug info
-                debug_info = await page.evaluate('''() => {
-                    let numbers = [];
-                    let allText = "";
-
-                    const walker = document.createTreeWalker(
-                        document.body,
-                        NodeFilter.SHOW_TEXT,
-                        null
-                    );
-
-                    let node;
-                    while (node = walker.nextNode()) {
-                        const text = node.textContent.trim();
-                        if (text.length > 0) {
-                            allText += text + " | ";
-                        }
-
-                        // Match: số 4+ chữ số (có thể có dấu phân cách)
-                        const matches = text.match(/[0-9]{1,3}(?:[.,][0-9]{3})*[0-9]{0,3}/g);
-                        if (matches) {
-                            numbers.push(...matches);
-                        }
+                # Tìm giá via React fiber approach (tham khảo code user cung cấp)
+                price_data = await page.evaluate('''() => {
+                    // Tìm canvas element chứa giá
+                    const canvas = document.querySelector('canvas[class*="canvasPrice"]');
+                    if (!canvas) {
+                        return { price: null, error: 'No canvas found' };
                     }
 
-                    // Lọc ra những số lớn (giá hợp lệ: >= 1000)
-                    const priceNumbers = numbers
-                        .map(n => parseInt(n.replace(/[.,]/g, ''), 10))
-                        .filter(n => n >= 1000 && n <= 999999999)
-                        .sort((a, b) => b - a);
+                    // Tìm React fiber key
+                    const fiberKey = Object.keys(canvas).find(k => k.startsWith('__reactFiber'));
+                    if (!fiberKey) {
+                        return { price: null, error: 'No React fiber found' };
+                    }
 
-                    return {
-                        foundPrice: priceNumbers.length > 0 ? priceNumbers[0] : null,
-                        allNumbers: numbers.slice(0, 20),  // First 20 numbers
-                        priceNumbers: priceNumbers.slice(0, 10),  // Valid prices
-                        pageLength: allText.length,
-                        hasPrice: allText.toLowerCase().includes('giá') || allText.toLowerCase().includes('price')
-                    };
+                    // Walk up React tree để tìm displayPriceFormated
+                    let fiber = canvas[fiberKey];
+                    for (let i = 0; i < 15 && fiber; i++) {
+                        if (fiber.memoizedProps?.displayPriceFormated) {
+                            const priceStr = String(fiber.memoizedProps.displayPriceFormated);
+                            const priceNum = parseInt(priceStr.replace(/[^0-9]/g, ''), 10);
+                            if (priceNum > 0) {
+                                return {
+                                    price: priceNum,
+                                    priceStr: priceStr,
+                                    found_at_level: i
+                                };
+                            }
+                        }
+                        fiber = fiber.return;  // Go up one level in React tree
+                    }
+
+                    // Fallback: tìm giá trong memoizedProps của component chứa
+                    return { price: null, error: 'displayPriceFormated not found in tree' };
                 }''')
 
-                if debug_info['foundPrice']:
-                    print(f"  ✓ Tìm được giá: {debug_info['foundPrice']:,} VNĐ")
-                    return debug_info['foundPrice']
+                if price_data.get('price'):
+                    print(f"  ✓ Tìm được giá: {price_data['price']:,} VNĐ")
+                    return price_data['price']
                 else:
-                    # Debug output
                     if wait_sec == 0:
-                        print(f"  [DEBUG] Trang có {debug_info['pageLength']} ký tự")
-                        print(f"  [DEBUG] Có từ 'giá/price': {debug_info['hasPrice']}")
-                        print(f"  [DEBUG] Numbers tìm được: {debug_info['allNumbers']}")
-                        print(f"  [DEBUG] Valid prices: {debug_info['priceNumbers']}")
+                        print(f"  [DEBUG] {price_data.get('error', 'Unknown error')}")
 
             print(f"  ✗ Không tìm được giá trong 8s")
             return None
