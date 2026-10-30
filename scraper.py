@@ -1,6 +1,7 @@
 import asyncio
 from playwright.async_api import async_playwright
 import time
+import re
 from config import THUOCSI_USERNAME, THUOCSI_PASSWORD
 
 class ThuocsiScraper:
@@ -54,39 +55,74 @@ class ThuocsiScraper:
                 await page.close()
 
     async def get_product_price(self, product_url):
-        """Lấy giá từ URL sản phẩm"""
+        """Lấy giá từ URL sản phẩm - để browser decrypt"""
         page = None
         try:
             page = await self.context.new_page()
-            await page.goto(product_url, wait_until='networkidle', timeout=30000)
+            # Use domcontentloaded instead of networkidle to load faster (faster DOM ready)
+            await page.goto(product_url, wait_until='domcontentloaded', timeout=15000)
 
-            # CSS selectors để tìm giá (cần điều chỉnh theo cấu trúc thực tế)
-            # Thử các selector phổ biến
-            selectors = [
-                'span.price',
-                'span.product-price',
-                'div.price',
-                'span[data-price]',
-                'div[data-price]',
-                'p.price',
-            ]
+            # Đợi JavaScript trang decrypt giá (tối đa 10 giây)
+            await page.wait_for_load_state('domcontentloaded')
 
-            price_text = None
-            for selector in selectors:
-                try:
-                    price_text = await page.text_content(selector)
-                    if price_text and price_text.strip():
-                        break
-                except:
-                    continue
+            print(f"⏳ Đợi JavaScript decrypt giá (max 8s)...")
+            for wait_sec in range(8):
+                await asyncio.sleep(1)
 
-            if price_text:
-                # Xóa ký tự không phải số
-                price = ''.join(filter(str.isdigit, price_text))
-                if price:
-                    return int(price)
+                # Tìm giá trong DOM sau mỗi giây - với debug info
+                debug_info = await page.evaluate('''() => {
+                    let numbers = [];
+                    let allText = "";
 
+                    const walker = document.createTreeWalker(
+                        document.body,
+                        NodeFilter.SHOW_TEXT,
+                        null
+                    );
+
+                    let node;
+                    while (node = walker.nextNode()) {
+                        const text = node.textContent.trim();
+                        if (text.length > 0) {
+                            allText += text + " | ";
+                        }
+
+                        // Match: số 4+ chữ số (có thể có dấu phân cách)
+                        const matches = text.match(/[0-9]{1,3}(?:[.,][0-9]{3})*[0-9]{0,3}/g);
+                        if (matches) {
+                            numbers.push(...matches);
+                        }
+                    }
+
+                    // Lọc ra những số lớn (giá hợp lệ: >= 1000)
+                    const priceNumbers = numbers
+                        .map(n => parseInt(n.replace(/[.,]/g, ''), 10))
+                        .filter(n => n >= 1000 && n <= 999999999)
+                        .sort((a, b) => b - a);
+
+                    return {
+                        foundPrice: priceNumbers.length > 0 ? priceNumbers[0] : null,
+                        allNumbers: numbers.slice(0, 20),  // First 20 numbers
+                        priceNumbers: priceNumbers.slice(0, 10),  // Valid prices
+                        pageLength: allText.length,
+                        hasPrice: allText.toLowerCase().includes('giá') || allText.toLowerCase().includes('price')
+                    };
+                }''')
+
+                if debug_info['foundPrice']:
+                    print(f"  ✓ Tìm được giá: {debug_info['foundPrice']:,} VNĐ")
+                    return debug_info['foundPrice']
+                else:
+                    # Debug output
+                    if wait_sec == 0:
+                        print(f"  [DEBUG] Trang có {debug_info['pageLength']} ký tự")
+                        print(f"  [DEBUG] Có từ 'giá/price': {debug_info['hasPrice']}")
+                        print(f"  [DEBUG] Numbers tìm được: {debug_info['allNumbers']}")
+                        print(f"  [DEBUG] Valid prices: {debug_info['priceNumbers']}")
+
+            print(f"  ✗ Không tìm được giá trong 8s")
             return None
+
         except Exception as e:
             print(f"✗ Lỗi lấy giá từ {product_url}: {e}")
             return None
