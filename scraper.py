@@ -53,7 +53,7 @@ class ThuocsiScraper:
                 await page.close()
 
     async def get_all_prices_from_catalog(self, products):
-        """Lấy giá tất cả sản phẩm từ trang catalog duy nhất"""
+        """Lấy giá tất cả sản phẩm từ trang catalog - multiple methods"""
         page = None
         try:
             page = await self.context.new_page()
@@ -63,10 +63,13 @@ class ThuocsiScraper:
             # Click "Xem thêm" để load tất cả sản phẩm
             print("⏳ Clicking 'Xem thêm' để tải tất cả sản phẩm...")
             for click_count in range(20):
-                # Tìm và click button "Xem thêm"
                 btn_clicked = await page.evaluate('''() => {
-                    const btn = [...document.querySelectorAll('button,a,div,span')]
-                        .find(e => e.childElementCount === 0 && /^Xem thêm \\d+ sản phẩm$/.test(e.textContent.trim()));
+                    // More flexible selector for "Xem thêm" button
+                    const buttons = [...document.querySelectorAll('button, a, div, span')];
+                    const btn = buttons.find(e => {
+                        const text = e.textContent.trim();
+                        return e.childElementCount === 0 && /Xem thêm/.test(text) && /\\d+ sản phẩm/.test(text);
+                    });
                     if (btn) {
                         btn.click();
                         return true;
@@ -75,44 +78,104 @@ class ThuocsiScraper:
                 }''')
 
                 if not btn_clicked:
-                    print("  ✓ Tất cả sản phẩm đã tải")
+                    print(f"  ✓ Tất cả sản phẩm đã tải")
                     break
 
-                await asyncio.sleep(2.5)  # Wait for content to load
+                await asyncio.sleep(2.5)
 
-            # Lấy giá tất cả sản phẩm từ trang
+            # Lấy giá từ trang - thử nhiều cách
             print("📊 Trích xuất giá từ tất cả sản phẩm...")
             extracted_data = await page.evaluate('''() => {
-                const getPrice = (canvas) => {
-                    if (!canvas) return null;
-                    const fiberKey = Object.keys(canvas).find(k => k.startsWith('__reactFiber'));
-                    if (!fiberKey) return null;
+                const results = [];
 
-                    let fiber = canvas[fiberKey];
-                    for (let i = 0; i < 15 && fiber; i++) {
-                        if (fiber.memoizedProps?.displayPriceFormated) {
-                            const priceStr = String(fiber.memoizedProps.displayPriceFormated);
-                            const priceNum = parseInt(priceStr.replace(/[^0-9]/g, ''), 10);
-                            if (priceNum > 0) return priceNum;
+                // Tìm tất cả product cards - flexible selector
+                const cards = [
+                    ...document.querySelectorAll('[class*="card"]'),
+                    ...document.querySelectorAll('[class*="product"]'),
+                    ...document.querySelectorAll('[role="button"]')
+                ];
+
+                // Remove duplicates
+                const uniqueCards = Array.from(new Set(cards));
+
+                uniqueCards.forEach((card, idx) => {
+                    if (idx >= 100) return; // Limit to 100 cards
+
+                    const cardText = card.innerText || card.textContent || '';
+                    if (cardText.length < 5) return; // Skip empty cards
+
+                    // Try to find price using multiple methods
+                    let price = null;
+
+                    // Method 1: Try React fiber on any canvas element
+                    if (!price) {
+                        const canvas = card.querySelector('canvas');
+                        if (canvas) {
+                            const fiberKey = Object.keys(canvas).find(k => k.startsWith('__react'));
+                            if (fiberKey) {
+                                let fiber = canvas[fiberKey];
+                                for (let i = 0; i < 20 && fiber; i++) {
+                                    if (fiber.memoizedProps) {
+                                        // Try different property names
+                                        const priceProps = ['displayPriceFormated', 'displayPrice', 'price', 'formatedPrice'];
+                                        for (const prop of priceProps) {
+                                            if (fiber.memoizedProps[prop]) {
+                                                const priceStr = String(fiber.memoizedProps[prop]);
+                                                const priceNum = parseInt(priceStr.replace(/[^0-9]/g, ''), 10);
+                                                if (priceNum > 0) {
+                                                    price = priceNum;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (price) break;
+                                    fiber = fiber.return;
+                                }
+                            }
                         }
-                        fiber = fiber.return;
                     }
-                    return null;
-                };
 
-                // Extract từ tất cả product cards
-                const products = [...document.querySelectorAll('[class*="styles_card__"]')]
-                    .filter(card => card.innerText.length > 0)
-                    .map(card => {
-                        const nameElems = card.querySelectorAll('[class*="titleWrapper"]');
-                        const name = nameElems.length > 0 ? nameElems[0].innerText.trim() : '';
-                        const canvas = card.querySelector('canvas[class*="canvasPrice"]');
-                        const price = getPrice(canvas);
-                        return { name, price };
-                    })
-                    .filter(p => p.price !== null);
+                    // Method 2: Extract numbers from text that look like prices
+                    if (!price) {
+                        const numbers = cardText.match(/\\d{1,3}(?:[.,]\\d{3})*[0-9]*/g) || [];
+                        const priceNumbers = numbers
+                            .map(n => parseInt(n.replace(/[.,]/g, ''), 10))
+                            .filter(n => n >= 1000 && n <= 999999999)
+                            .sort((a, b) => b - a);
+                        if (priceNumbers.length > 0) {
+                            price = priceNumbers[0];
+                        }
+                    }
 
-                return products;
+                    // Get product name - try multiple selectors
+                    let name = '';
+                    const nameSelectors = [
+                        '[class*="titleWrapper"]',
+                        '[class*="title"]',
+                        '[class*="name"]',
+                        'h2, h3, h4'
+                    ];
+                    for (const selector of nameSelectors) {
+                        const nameEl = card.querySelector(selector);
+                        if (nameEl) {
+                            name = nameEl.innerText?.trim() || nameEl.textContent?.trim() || '';
+                            if (name) break;
+                        }
+                    }
+
+                    // If still no name, try first meaningful text
+                    if (!name) {
+                        const lines = cardText.split('\\n').filter(l => l.trim().length > 0);
+                        name = lines[0] || '';
+                    }
+
+                    if (price && name) {
+                        results.push({ name: name.substring(0, 100), price });
+                    }
+                });
+
+                return results;
             }''')
 
             # Map với products từ config
