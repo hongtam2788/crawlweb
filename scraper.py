@@ -53,13 +53,16 @@ class ThuocsiScraper:
                 await page.close()
 
     async def get_all_products_from_catalog(self):
-        """Lấy TẤT CẢ giá sản phẩm từ trang catalog - dựa trên reference code"""
+        """Lấy TẤT CẢ giá sản phẩm từ trang catalog"""
         page = None
         try:
             page = await self.context.new_page()
             print("📖 Đang tải trang product catalog...")
             await page.goto('https://thuocsi.vn/user/product-catalog', wait_until='domcontentloaded', timeout=15000)
-            await asyncio.sleep(1)
+
+            # QUAN TRỌNG: Chờ page load hoàn toàn (có thể bị redirect sau login)
+            print("⏳ Chờ trang catalog tải hoàn toàn...")
+            await asyncio.sleep(5)  # Chờ 5 giây để page tải hoàn toàn
 
             # Sử dụng exact same logic từ reference code
             print("⏳ Clicking 'Xem thêm' để tải tất cả sản phẩm...")
