@@ -158,19 +158,19 @@ class ThuocsiScraper:
                 // 3. Extract from all product cards
                 const rows = [...document.querySelectorAll('[class*="styles_card__"]')]
                     .map(c => {
-                        const L = c.innerText.split('\\n').map(s => s.trim()).filter(Boolean);
                         const cv = c.querySelector('canvas[class*="canvasPrice"]');
                         const price = priceOf(cv);
 
-                        // Get product name from text content
-                        const name = L[0] || '';
+                        // Get product name from image alt attribute (most reliable)
+                        const img = c.querySelector('img');
+                        const name = img ? img.getAttribute('alt') : '';
 
                         return {
                             name: name,
                             price: price,
                         };
                     })
-                    .filter(r => r.price !== '');  // Only products with price
+                    .filter(r => r.price !== '' && r.name !== '');  // Only products with price AND name
 
                 console.log(`Found ${rows.length} products with prices`);
                 return rows;
