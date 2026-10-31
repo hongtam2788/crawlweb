@@ -1,4 +1,5 @@
 import asyncio
+import random
 from playwright.async_api import async_playwright
 from config import THUOCSI_USERNAME, THUOCSI_PASSWORD
 
@@ -9,12 +10,34 @@ class ThuocsiScraper:
         self.context = None
 
     async def setup(self):
-        """Khởi tạo Playwright"""
+        """Khởi tạo Playwright với anti-bot detection"""
         try:
             self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(headless=True)
-            self.context = await self.browser.new_context()
-            print("✓ Playwright đã khởi tạo thành công")
+
+            # 1. Tắt headless mode + thêm anti-detection flags
+            self.browser = await self.playwright.chromium.launch(
+                headless=False,  # Non-headless mode - giống browser thực
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                    '--disable-popup-blocking'
+                ]
+            )
+
+            # 2. Cấu hình context với user-agent giả lập và locale VN
+            self.context = await self.browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080},
+                screen={'width': 1920, 'height': 1080},
+                locale='vi-VN',
+                timezone_id='Asia/Ho_Chi_Minh',
+                permissions=['geolocation'],
+                geolocation={'latitude': 10.7769, 'longitude': 106.6826},  # Hà Nội
+            )
+
+            print("✓ Playwright đã khởi tạo với anti-bot detection")
             return True
         except Exception as e:
             print(f"✗ Lỗi khởi tạo Playwright: {e}")
@@ -31,17 +54,43 @@ class ThuocsiScraper:
             page = await self.context.new_page()
             print("⏳ Đang đăng nhập vào thuocsi.vn...")
 
-            await page.goto('https://thuocsi.vn/login', wait_until='networkidle')
+            # Che giấu dấu hiệu Playwright
+            await page.evaluate('''
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => false,
+                });
+                Object.defineProperty(navigator, 'chromeFlags', {
+                    get: () => undefined,
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5],
+                });
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['vi-VN', 'vi', 'en-US', 'en'],
+                });
+                window.chrome = { runtime: {} };
+            ''')
 
-            # Điền username
-            await page.fill('input[name="email"]', THUOCSI_USERNAME)
+            await page.goto('https://thuocsi.vn/login', wait_until='networkidle', timeout=30000)
+
+            # Delay ngẫu nhiên để giống người thực
+            await asyncio.sleep(random.uniform(1.5, 2.5))
+
+            # Điền username (sử dụng input[name="username"] cho login tab)
+            await page.fill('input[name="username"]', THUOCSI_USERNAME)
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+
+            # Điền password
             await page.fill('input[name="password"]', THUOCSI_PASSWORD)
+            await asyncio.sleep(random.uniform(0.5, 1.0))
 
-            # Click nút đăng nhập
-            await page.click('button[type="submit"]')
+            # Click nút đăng nhập (submit button với text "Đăng Nhập")
+            submit_button = await page.query_selector('button[type="submit"]')
+            await submit_button.click()
 
             # Chờ navigate xong
-            await page.wait_for_load_state('networkidle')
+            await page.wait_for_load_state('networkidle', timeout=30000)
+            await asyncio.sleep(random.uniform(2.0, 3.0))
 
             print("✓ Đăng nhập thành công")
             return True
@@ -57,12 +106,24 @@ class ThuocsiScraper:
         page = None
         try:
             page = await self.context.new_page()
-            print("📖 Đang tải trang product catalog...")
-            await page.goto('https://thuocsi.vn/user/product-catalog', wait_until='domcontentloaded', timeout=15000)
 
-            # QUAN TRỌNG: Chờ page load hoàn toàn (có thể bị redirect sau login)
+            # Che giấu dấu hiệu automation
+            await page.evaluate('''
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => false,
+                });
+                Object.defineProperty(navigator, 'chromeFlags', {
+                    get: () => undefined,
+                });
+                window.chrome = { runtime: {} };
+            ''')
+
+            print("📖 Đang tải trang product catalog...")
+            await page.goto('https://thuocsi.vn/user/product-catalog', wait_until='domcontentloaded', timeout=30000)
+
+            # Chờ trang load hoàn toàn + delay ngẫu nhiên
             print("⏳ Chờ trang catalog tải hoàn toàn...")
-            await asyncio.sleep(5)  # Chờ 5 giây để page tải hoàn toàn
+            await asyncio.sleep(random.uniform(5.0, 7.0))
 
             # Sử dụng exact same logic từ reference code
             print("⏳ Clicking 'Xem thêm' để tải tất cả sản phẩm...")
@@ -97,19 +158,19 @@ class ThuocsiScraper:
                 // 3. Extract from all product cards
                 const rows = [...document.querySelectorAll('[class*="styles_card__"]')]
                     .map(c => {
-                        const L = c.innerText.split('\\n').map(s => s.trim()).filter(Boolean);
                         const cv = c.querySelector('canvas[class*="canvasPrice"]');
                         const price = priceOf(cv);
 
-                        // Get product name from text content
-                        const name = L[0] || '';
+                        // Get product name from image alt attribute (most reliable)
+                        const img = c.querySelector('img');
+                        const name = img ? img.getAttribute('alt') : '';
 
                         return {
                             name: name,
                             price: price,
                         };
                     })
-                    .filter(r => r.price !== '');  // Only products with price
+                    .filter(r => r.price !== '' && r.name !== '');  // Only products with price AND name
 
                 console.log(`Found ${rows.length} products with prices`);
                 return rows;
