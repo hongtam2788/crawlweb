@@ -1,7 +1,7 @@
 import asyncio
 import os
 from scraper import scrape_all_prices
-from excel_handler import ExcelHandler
+from csv_handler import CSVHandler
 from datetime import datetime
 
 async def test_scraper():
@@ -44,11 +44,11 @@ async def test_scraper():
                 'price': price_value
             })
 
-        # Lưu vào Excel
-        print("💾 Đang lưu vào Excel...")
-        excel = ExcelHandler()
-        excel.add_prices(formatted_results)
-        print(f"✓ Đã lưu {len(formatted_results)} sản phẩm vào {excel.file}\n")
+        # Lưu vào CSV
+        print("💾 Đang lưu vào CSV...")
+        csv_handler = CSVHandler()
+        csv_handler.add_prices(formatted_results)
+        print(f"✓ Đã lưu {len(formatted_results)} sản phẩm vào {csv_handler.file}\n")
 
     else:
         print("\n✗ Không lấy được giá nào")

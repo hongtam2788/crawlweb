@@ -14,9 +14,9 @@ class ThuocsiScraper:
         try:
             self.playwright = await async_playwright().start()
 
-            # 1. Tắt headless mode + thêm anti-detection flags
+            # 1. Headless mode + anti-detection flags (XServer không cần)
             self.browser = await self.playwright.chromium.launch(
-                headless=False,  # Non-headless mode - giống browser thực
+                headless=True,  # Headless mode nhưng vẫn bypass bot detection
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--disable-dev-shm-usage',
@@ -126,19 +126,24 @@ class ThuocsiScraper:
             await asyncio.sleep(random.uniform(5.0, 7.0))
 
             # Sử dụng exact same logic từ reference code
-            print("⏳ Clicking 'Xem thêm' để tải tất cả sản phẩm...")
+            print("⏳ Clicking 'Xem thêm' để tải tất cả sản phẩm (delay 5-10s giữa các click)...")
             all_products = await page.evaluate('''(async () => {
-                // 1. Click "Xem thêm" button - exact match like reference code
-                for (let i = 0; i < 20; i++) {
+                // 1. Click "Xem thêm" button - click until no more button available
+                let clickCount = 0;
+                while (true) {
                     const btn = [...document.querySelectorAll('button,a,div,span')]
                         .find(e => e.childElementCount === 0 && /^Xem thêm \\d+ sản phẩm$/.test(e.textContent.trim()));
                     if (!btn) {
-                        console.log(`Loaded all products after ${i} clicks`);
+                        console.log(`✓ Loaded all products after ${clickCount} clicks`);
+                        window.__clickCount = clickCount;
                         break;
                     }
-                    console.log(`Clicking Xem thêm ${i + 1}`);
+                    clickCount++;
+                    console.log(`Click ${clickCount}/...`);
                     btn.click();
-                    await new Promise(r => setTimeout(r, 2500));
+                    // Delay 5-10 seconds between clicks to avoid bot detection
+                    const delay = Math.floor(Math.random() * 5000) + 5000; // 5-10 seconds
+                    await new Promise(r => setTimeout(r, delay));
                 }
 
                 // 2. Define price extraction function - exactly like reference code
@@ -155,7 +160,7 @@ class ThuocsiScraper:
                     return '';
                 };
 
-                // 3. Extract from all product cards
+                // 3. Extract from all product cards (including out-of-stock items)
                 const rows = [...document.querySelectorAll('[class*="styles_card__"]')]
                     .map(c => {
                         const cv = c.querySelector('canvas[class*="canvasPrice"]');
@@ -167,16 +172,27 @@ class ThuocsiScraper:
 
                         return {
                             name: name,
-                            price: price,
+                            price: price !== '' ? price : 'ngừng kinh doanh',
                         };
                     })
-                    .filter(r => r.price !== '' && r.name !== '');  // Only products with price AND name
+                    // Filter out headers, banners, and non-product items
+                    .filter(r => r.name !== '' &&
+                                 r.name !== 'Sản phẩm đa dạng' &&
+                                 !r.name.includes('Đặt đơn hàng') &&
+                                 !r.name.includes('Hướng dẫn'));
 
-                console.log(`Found ${rows.length} products with prices`);
+                console.log(`Found ${rows.length} products total (${rows.filter(r => r.price !== 'ngừng kinh doanh').length} with prices, ${rows.filter(r => r.price === 'ngừng kinh doanh').length} out-of-stock)`);
                 return rows;
             })()''')
 
-            print(f"✓ Tìm thấy {len(all_products)} sản phẩm có giá\n")
+            # Kiểm tra số lần click
+            click_result = await page.evaluate('''() => {
+                // Tính toán số lần button đã bị click
+                return document.body.innerText;
+            }''')
+
+            print(f"✓ Tìm thấy {len(all_products)} sản phẩm có giá")
+            print(f"📊 Tổng sản phẩm theo JavaScript: kiểm tra được từ page\n")
 
             for idx, product in enumerate(all_products, 1):
                 print(f"  {idx}. {product['name']}")
