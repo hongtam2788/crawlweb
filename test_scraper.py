@@ -28,14 +28,20 @@ async def test_scraper():
         for idx, result in enumerate(results, 1):
             # Parse price - có thể là chuỗi hoặc số
             price_str = result['price']
-            if isinstance(price_str, str):
-                # Nếu là chuỗi định dạng giá (ví dụ "123.456đ" hoặc "123.456"), lấy số
-                price_value = int(price_str.replace('.', '').replace('đ', '').strip())
-            else:
-                price_value = int(price_str)
 
-            print(f"  {idx}. {result['name']}")
-            print(f"     💰 Giá: {price_value:,} VNĐ\n")
+            if price_str == 'ngừng kinh doanh':
+                price_value = 'ngừng kinh doanh'
+                print(f"  {idx}. {result['name']}")
+                print(f"     ❌ {price_value}\n")
+            else:
+                if isinstance(price_str, str):
+                    # Nếu là chuỗi định dạng giá (ví dụ "123.456đ" hoặc "123.456"), lấy số
+                    price_value = int(price_str.replace('.', '').replace('đ', '').strip())
+                else:
+                    price_value = int(price_str)
+
+                print(f"  {idx}. {result['name']}")
+                print(f"     💰 Giá: {price_value:,} VNĐ\n")
 
             formatted_results.append({
                 'STT': idx,
