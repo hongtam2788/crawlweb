@@ -2,6 +2,7 @@ import asyncio
 import os
 from scraper import scrape_all_prices
 from csv_handler import CSVHandler
+from excel_price_formatter import ExcelPriceFormatter
 from datetime import datetime
 
 async def test_scraper():
@@ -55,6 +56,12 @@ async def test_scraper():
         csv_handler = CSVHandler()
         csv_handler.add_prices(formatted_results)
         print(f"✓ Đã lưu {len(formatted_results)} sản phẩm vào {csv_handler.file}\n")
+
+        # Format to Excel with colors
+        print("🎨 Đang format Excel với màu sắc...")
+        formatter = ExcelPriceFormatter()
+        formatter.format_csv_to_excel()
+        print()
 
     else:
         print("\n✗ Không lấy được giá nào")
